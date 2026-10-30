@@ -6,6 +6,7 @@
 #   install/runtime/bin/osx64/vrclient.dylib            universal (arm64 + x86_64), ad-hoc signed
 #   install/runtime/bin/osx64/libopenxr_loader.dylib    universal OpenXR loader (openxr-sdk 1.1.65), found via @loader_path
 #   install/runtime/bin/osx64/version.txt
+#   install/runtime/libexec/opencomposite/oc-webbroker, oc-webhelper   web overlays (arm64, Swift), ad-hoc signed
 #   tests/ovr_metal                                      arm64 test app (tests/openvr-metal), unless --no-test
 # Environment: OC_RELEASE (version label, default git describe), BUILD_TYPE (default RelWithDebInfo), NINJA_FLAGS.
 # ccache is used when found.
@@ -59,6 +60,11 @@ for arch in "${ARCHS[@]}"; do
 	run "oc-$arch-build" ninja -C "$OUT/oc-$arch" ${NINJA_FLAGS:-}
 done
 
+echo "==> web overlays (arm64)"
+web_build="$OUT/web-overlays"
+run web-overlays swift build -c release --arch arm64 --package-path "$ROOT/web-overlays" --build-path "$web_build"
+web_bin="$(swift build -c release --arch arm64 --package-path "$ROOT/web-overlays" --build-path "$web_build" --show-bin-path)"
+
 echo "==> install tree"
 bin="$OUT/install/runtime/bin/osx64"
 rm -rf "$OUT/install"
@@ -73,7 +79,18 @@ cp -L "$loader/libopenxr_loader.dylib" "$bin/$loader_name"
 echo "$version" > "$bin/version.txt"
 codesign --force --sign - "$bin/$loader_name" "$bin/vrclient.dylib"
 
-for f in "$bin/vrclient.dylib" "$bin/$loader_name"; do
+libexec="$OUT/install/runtime/libexec/opencomposite"
+mkdir -p "$libexec"
+for exe in oc-webbroker oc-webhelper; do
+	cp "$web_bin/$exe" "$libexec/"
+	# Drop the toolchain's absolute rpaths; the helper finds the loader via @executable_path/../../bin/osx64.
+	otool -l "$libexec/$exe" | awk '$1 == "path" && $2 ~ /^\// && $2 != "/usr/lib/swift" { print $2 }' | while read -r rp; do
+		install_name_tool -delete_rpath "$rp" "$libexec/$exe" 2> /dev/null
+	done
+	codesign --force --sign - "$libexec/$exe"
+done
+
+for f in "$bin/vrclient.dylib" "$bin/$loader_name" "$libexec"/*; do
 	lipo -info "$f"
 done
 otool -L -arch arm64 "$bin/vrclient.dylib" | tail -n +2
