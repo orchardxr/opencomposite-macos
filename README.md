@@ -11,6 +11,9 @@ Part of orchardxr: vibe-coded support for VR on macOS: native and Windows games,
 - **Windows games** reach this runtime through [orchardxr/varbor](https://github.com/orchardxr/varbor).
 - **Native macOS OpenVR games** that submit Metal textures (`vr::TextureType_Metal`) use it directly. This path is
   barely tested so far.
+- **Web overlays** (e.g. loading screens) like SteamVR's vrwebhelper: games that draw parts of their UI as a web
+  page, such as Half-Life: Alyx's loading screens, get them rendered and shown in the headset. Started automatically
+  when a game needs them; see [docs/web-overlays.md](docs/web-overlays.md).
 - **Output** goes to WiVRn's server from [orchardxr/wivrn-macos](https://github.com/orchardxr/wivrn-macos), which
   streams to any WiVRn-supported headset (tested on Quest 3S).
 
@@ -37,7 +40,7 @@ The runtime goes to `~/Library/Application Support/OpenComposite` and is registe
 
 ```sh
 ./install.sh status       # which runtime is active, installed version
-./install.sh uninstall    # unregister and delete ~/Library/Application Support/OpenComposite
+./install.sh uninstall    # unregister, delete ~/Library/Application Support/OpenComposite and its logs
 ```
 
 To update, run `./install.sh` from the new release.
@@ -48,6 +51,8 @@ To update, run `./install.sh` from the new release.
 - While installed, this runtime comes first: OpenVR apps load it rather than SteamVR. Uninstall to switch back.
 - The binaries are ad-hoc signed, not notarized. `install.sh` clears the download quarantine on the files it installs.
 - Without a running OpenXR runtime with Metal support, games see no headset.
+- Web overlays: so far tested end to end only in an earlier form; Alyx's holograms (3D render models) and its
+  encrypted fonts are not supported (the text falls back to Arial). Log: `~/Library/Logs/OpenComposite/web-overlays.log`.
 
 ## License
 

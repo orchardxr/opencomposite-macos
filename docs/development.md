@@ -9,6 +9,7 @@ Building, testing and releasing opencomposite-macos. For installing and using it
 | `third_party/opencomposite` | upstream OpenComposite (submodule, pinned; its own submodules glm, libunwind, openxr-sdk 1.0.12 are recursive) |
 | `third_party/openxr-sdk` | OpenXR-SDK-Source `release-1.1.65`, for the OpenXR loader shipped next to `vrclient.dylib` |
 | `patches/opencomposite` | our patch stack, applied (staged, never committed) on top of the pin |
+| `web-overlays` | Swift package: `oc-webbroker`, `oc-webhelper` and the overlay compositor (`COverlayXR`), see [web-overlays.md](web-overlays.md) |
 | `scripts/patches.sh` | `apply` / `reset` / `status` / `new <name>` for the patch stack |
 | `scripts/build.sh` | builds the install tree and the test app |
 | `scripts/install.sh` | per-user install / uninstall / status |
@@ -16,6 +17,7 @@ Building, testing and releasing opencomposite-macos. For installing and using it
 | `scripts/run-ovr-metal.sh` | runs the Metal test app against an OpenXR runtime |
 | `tests/openvr-metal` | native OpenVR app submitting Metal textures |
 | `tests/install` | installer test against a throwaway `HOME` |
+| `tests/web-overlays` | headless web overlay test: game side, stub OpenXR runtime, sample web root |
 | `.github/workflows/build.yml` | CI and releases |
 
 ## Patches
@@ -31,7 +33,7 @@ of this repo.
 | 0004 openvr-sdk-2.15.6-interfaces | interfaces of OpenVR 2.15.6 (current games) |
 | 0006 copy-submitted-bounds-and-runtime-refresh-rate | copy only the submitted texture bounds; display refresh rate from the runtime (XR_FB_display_refresh_rate) |
 | 0007 quiet-no-vr-and-runtime-loss | no runtime or headset: an init error instead of a message box; runtime loss: stop the frame loop, send VREvent_Quit |
-| 0008 web-overlay-mailbox | mailbox/control-panel interfaces SteamVR web overlays use |
+| 0008 web-overlay-mailbox | `IVRMailbox` and `IVRControlPanel::RegisterExternalWebRoot` as SteamVR's mailbox protocol (WebSocket on 127.0.0.1:27062); starts `oc-webbroker` on demand (macOS); fake `ready` without a broker, as upstream |
 | 0009 macos-native-build | CMake and sources build natively on macOS (`bin/osx64/vrclient.dylib`) |
 | 0010 metal-compositor | Metal compositor and `XR_KHR_metal_enable` session |
 | 0011 metal-submit-sync | `oc_metal_submit_sync_begin` / `oc_metal_submit_sync_end` exports for bridges that submit from another thread |
@@ -42,7 +44,7 @@ bump upstream, check out the new commit in the submodule, `git add third_party/o
 
 ## Build
 
-Needs Xcode (or the Command Line Tools), CMake and Ninja (`brew install cmake ninja`; ccache is used when present).
+Needs Xcode (Swift 6 for the web overlay helpers), CMake and Ninja (`brew install cmake ninja`; ccache is used when present).
 
 ```sh
 git clone --recursive git@github.com:orchardxr/opencomposite-macos.git
@@ -57,9 +59,13 @@ Output in `build/install/runtime`:
 runtime/bin/osx64/vrclient.dylib           universal, exports VRClientCoreFactory, oc_metal_submit_sync_begin/end
 runtime/bin/osx64/libopenxr_loader.dylib   universal OpenXR loader 1.1.65 (vrclient finds it via @loader_path)
 runtime/bin/osx64/version.txt
+runtime/libexec/opencomposite/oc-webbroker  arm64, web overlay broker (started by vrclient.dylib on demand)
+runtime/libexec/opencomposite/oc-webhelper  arm64, web overlay renderer, links the loader in bin/osx64
 ```
 
-Both dylibs are ad-hoc signed. `scripts/install.sh` installs this tree when it is run from the repo.
+Everything is ad-hoc signed. The web overlay binaries are arm64 only (Swift, WebKit); x86_64 games under Rosetta start
+them as native processes. They are built with SwiftPM (`swift build --package-path web-overlays`) after the loader,
+whose headers and dylib they use. `scripts/install.sh` installs this tree when it is run from the repo.
 
 ## How OpenVR clients find the runtime
 
@@ -83,6 +89,9 @@ deletes the install directory.
 existing SteamVR entry) and `dlopen`s the installed `vrclient.dylib` as arm64 and, under Rosetta, as x86_64.
 `INSTALL_SH=<path>` tests another copy of `install.sh`, e.g. the one from an unpacked release zip.
 
+`tests/web-overlays/test-web-overlays.sh` is the headless web overlay test (on-demand broker start, clean
+environment, page load, exit after the game, fallback without a broker); see [web-overlays.md](web-overlays.md#tests).
+
 `tests/openvr-metal/ovr_metal.mm` is a native OpenVR app that loads `<runtime>/bin/osx64/vrclient.dylib` itself and
 submits Metal textures in four modes (`separate`, `sbs`, `array`, `msaa`). `scripts/build.sh` builds it as
 `build/tests/ovr_metal` (arm64) against OpenComposite's bundled OpenVR 2.15.6 header.
@@ -104,7 +113,8 @@ The app exits non-zero on any error; the script prints the log tails, error coun
 ## CI and releases
 
 `.github/workflows/build.yml` runs on pushes to `main`, pull requests and `v*` tags, on `macos-15`: it applies the
-patches, builds, checks that both dylibs have arm64 and x86_64 slices and valid signatures, runs the installer test,
+patches, builds, checks that both dylibs have arm64 and x86_64 slices, the web overlay binaries arm64, and all valid
+signatures, runs the web overlay test and the installer test,
 and uploads the zip from `scripts/package.sh` as an artifact.
 
 To release, push a `v*` tag. The workflow builds with that version label and creates a GitHub release with
