@@ -18,6 +18,10 @@ echo "== fresh install"
 "$INSTALL" install
 [[ -f "$RT/bin/osx64/vrclient.dylib" && -e "$RT/bin/osx64/libopenxr_loader.dylib" ]] || fail "runtime not copied"
 [[ "$(runtimes)" == "$RT" ]] || fail "vrpath runtime list: $(runtimes)"
+for exe in oc-webbroker oc-webhelper; do
+	[[ -x "$RT/libexec/opencomposite/$exe" ]] || fail "$exe not installed"
+	codesign --verify "$RT/libexec/opencomposite/$exe" || fail "$exe not validly signed"
+done
 "$INSTALL" status | grep -q "active:    yes" || fail "status not active"
 if command -v clang > /dev/null; then
 	printf '#include <dlfcn.h>\n#include <stdio.h>\nint main(int c,char**v){void*h=dlopen(v[1],RTLD_NOW);if(!h){puts(dlerror());return 1;}return !(dlsym(h,"VRClientCoreFactory")&&dlsym(h,"oc_metal_submit_sync_begin")&&dlsym(h,"oc_metal_submit_sync_end"));}\n' > "$T/dl.c"
@@ -29,9 +33,12 @@ if command -v clang > /dev/null; then
 	done
 fi
 echo "== uninstall (only entry)"
+mkdir -p "$HOME/Library/Logs/OpenComposite"
+touch "$HOME/Library/Logs/OpenComposite/web-overlays.log"
 "$INSTALL" uninstall
 [[ ! -e "$VRPATH" ]] || fail "vrpath left behind: $(cat "$VRPATH")"
 [[ ! -e "$RT" ]] || fail "runtime left behind"
+[[ ! -e "$HOME/Library/Logs/OpenComposite" ]] || fail "web overlay logs left behind"
 
 echo "== install next to SteamVR"
 steamvr="$HOME/Library/Application Support/Steam/steamapps/common/SteamVR"

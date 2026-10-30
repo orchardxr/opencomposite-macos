@@ -44,6 +44,14 @@ jobs:
             lipo -info "$f"
             codesign --verify "$f"
           done
+          for f in build/install/runtime/libexec/opencomposite/oc-webbroker build/install/runtime/libexec/opencomposite/oc-webhelper; do
+            lipo "$f" -verify_arch arm64
+            lipo -info "$f"
+            codesign --verify "$f"
+          done
+
+      - name: Web overlay test (stub OpenXR runtime, headless)
+        run: tests/web-overlays/test-web-overlays.sh
 
       - name: Install test (temporary HOME)
         run: tests/install/test-install.sh

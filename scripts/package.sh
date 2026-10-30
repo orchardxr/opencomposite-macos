@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Zip the install tree from scripts/build.sh with the installer and the licences.
 #   scripts/package.sh <name>     -> build/dist/<name>.zip containing <name>/{install.sh,runtime/,README.md,docs/,licenses/}
+# runtime/ includes libexec/opencomposite (oc-webbroker, oc-webhelper: web overlays).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 name="${1:?usage: package.sh <name>}"
@@ -9,7 +10,7 @@ rt="$ROOT/build/install/runtime"
 stage="$ROOT/build/dist/$name"
 rm -rf "$stage" "$stage.zip"
 mkdir -p "$stage/licenses" "$stage/docs"
-cp "$ROOT/docs/development.md" "$stage/docs/"
+cp "$ROOT/docs/development.md" "$ROOT/docs/web-overlays.md" "$stage/docs/"
 cp -R "$rt" "$stage/runtime"
 cp "$ROOT/scripts/install.sh" "$ROOT/README.md" "$stage/"
 cp "$ROOT/LICENSE" "$stage/licenses/MIT-scripts.txt"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install OpenComposite as the user's shared OpenVR runtime on macOS, or remove it again.
 #   install.sh [install]    copy the runtime to $OPENCOMPOSITE_HOME/runtime and register it first in openvrpaths.vrpath
-#   install.sh uninstall    unregister it and delete $OPENCOMPOSITE_HOME
+#   install.sh uninstall    unregister it, stop its web overlay processes, delete $OPENCOMPOSITE_HOME and its logs
 #   install.sh status       show the registered runtimes and the installed version
 #
 # OPENCOMPOSITE_HOME   install location (default ~/Library/Application Support/OpenComposite)
@@ -12,6 +12,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST="${OPENCOMPOSITE_HOME:-$HOME/Library/Application Support/OpenComposite}"
 VRPATH="$HOME/Library/Application Support/OpenVR/.openvr/openvrpaths.vrpath"
 RUNTIME="$DEST/runtime"
+WEB_LOGS="$HOME/Library/Logs/OpenComposite"
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 
@@ -73,7 +74,11 @@ do_install() {
 	rm -rf "$RUNTIME.new"
 	cp -R "$from" "$RUNTIME.new"
 	xattr -dr com.apple.quarantine "$RUNTIME.new" 2> /dev/null || true
-	codesign --verify "$RUNTIME.new/bin/osx64/vrclient.dylib" || die "vrclient.dylib is not validly signed"
+	local f
+	for f in "$RUNTIME.new/bin/osx64/vrclient.dylib" "$RUNTIME.new"/libexec/opencomposite/*; do
+		[[ -e "$f" ]] || continue
+		codesign --verify "$f" || die "${f#"$RUNTIME.new/"} is not validly signed"
+	done
 	rm -rf "$RUNTIME"
 	mv "$RUNTIME.new" "$RUNTIME"
 	vrpath add > /dev/null
@@ -88,9 +93,16 @@ do_uninstall() {
 			*) echo "unregistered from $VRPATH" ;;
 		esac
 	fi
+	if pkill -f "$RUNTIME/libexec/opencomposite/oc-web" 2> /dev/null; then
+		echo "stopped the web overlay broker"
+	fi
 	if [[ -d "$DEST" ]]; then
 		rm -rf "$DEST"
 		echo "deleted $DEST"
+	fi
+	if [[ -d "$WEB_LOGS" ]]; then
+		rm -rf "$WEB_LOGS"
+		echo "deleted $WEB_LOGS"
 	fi
 }
 
@@ -104,6 +116,9 @@ do_status() {
 	if [[ -f "$RUNTIME/bin/osx64/vrclient.dylib" ]]; then
 		echo "installed: $RUNTIME ($(cat "$RUNTIME/bin/osx64/version.txt" 2> /dev/null || echo '?'))"
 		[[ "$(vrpath list | head -1)" == "$RUNTIME" ]] && echo "active:    yes" || echo "active:    no (another runtime is listed first)"
+		if pgrep -f "$RUNTIME/libexec/opencomposite/oc-webbroker" > /dev/null; then
+			echo "web overlays: broker running (log $WEB_LOGS/web-overlays.log)"
+		fi
 	else
 		echo "installed: no"
 	fi

@@ -1,0 +1,7 @@
+{
+	"interstitials": {
+		"type": "overlay",
+		"url": "/interstitials.html",
+		"pixel_size": [1024, 1024]
+	}
+}
