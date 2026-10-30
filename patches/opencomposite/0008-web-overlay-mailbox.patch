@@ -1,23 +1,23 @@
-From: macvr
+From: opencomposite-macos
 Subject: [PATCH] web-overlay-mailbox
 
 ---
  CMakeLists.txt                                     |   4 +
  OpenOVR/Misc/Config.cpp                            |   1 +
  OpenOVR/Misc/Config.h                              |   2 +
- OpenOVR/Misc/WebMailbox.cpp                        | 443 +++++++++++++++++++++
- OpenOVR/Misc/WebMailbox.h                          |  42 ++
+ OpenOVR/Misc/WebMailbox.cpp                        | 572 +++++++++++++++++++++
+ OpenOVR/Misc/WebMailbox.h                          |  43 ++
  OpenOVR/Reimpl/BaseControlPanel.cpp                |   8 +-
  OpenOVR/Reimpl/BaseControlPanel.h                  |   2 +-
- OpenOVR/Reimpl/BaseMailbox.cpp                     |  67 +++-
+ OpenOVR/Reimpl/BaseMailbox.cpp                     |  67 ++-
  .../custom_interfaces/IVRControlPanel_006.h        |   2 +-
- 9 files changed, 546 insertions(+), 25 deletions(-)
+ 9 files changed, 676 insertions(+), 25 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 297cc638bf6cad82e3c4403a6df8af5b7e9000a9..b8255ab2491d814a46d0bcfb77e77bfec0332b1b 100644
+index a30e0cfa46a60599d1643c72e9637d116ec59482..d5225bb0e813c643b3d819b0deb56eaaf724c50b 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -308,6 +308,7 @@ add_library(OCCore STATIC
+@@ -302,6 +302,7 @@ add_library(OCCore STATIC
  	OpenOVR/linux_funcs.cpp
  	OpenOVR/Misc/backtrace.cpp
  	OpenOVR/Misc/Config.cpp
@@ -25,7 +25,7 @@ index 297cc638bf6cad82e3c4403a6df8af5b7e9000a9..b8255ab2491d814a46d0bcfb77e77bfe
  	OpenOVR/Misc/debug_helper.cpp
  	OpenOVR/Misc/xrutil.cpp
  	OpenOVR/Misc/xrmoreutils.cpp
-@@ -427,6 +428,9 @@ target_include_directories(OCCore PRIVATE BundledLibs OpenVRHeaders)
+@@ -421,6 +422,9 @@ target_include_directories(OCCore PRIVATE BundledLibs OpenVRHeaders)
  target_compile_definitions(OCCore PRIVATE ${GRAPHICS_API_SUPPORT_FLAGS})
  
  target_link_libraries(OCCore PRIVATE OpenVR Vulkan ${XrLib} ${glmLib})
@@ -69,10 +69,10 @@ index a3cebcf07449202ca9d9ef6285c714fb85fdb6c5..643005600e4874cb67322adc92632324
  extern Config oovr_global_configuration;
 diff --git a/OpenOVR/Misc/WebMailbox.cpp b/OpenOVR/Misc/WebMailbox.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..5a14ab19cd3d9e97a346641caf3e4a24d6247e4a
+index 0000000000000000000000000000000000000000..7a80ca15e2dee16f368c1d221fac2455269d70c3
 --- /dev/null
 +++ b/OpenOVR/Misc/WebMailbox.cpp
-@@ -0,0 +1,443 @@
+@@ -0,0 +1,572 @@
 +#include "stdafx.h"
 +
 +#include "WebMailbox.h"
@@ -88,6 +88,7 @@ index 0000000000000000000000000000000000000000..5a14ab19cd3d9e97a346641caf3e4a24
 +#include <mutex>
 +#include <random>
 +#include <thread>
++#include <vector>
 +
 +#ifdef _WIN32
 +#include <winsock2.h>
@@ -102,6 +103,16 @@ index 0000000000000000000000000000000000000000..5a14ab19cd3d9e97a346641caf3e4a24
 +#include <poll.h>
 +#include <sys/socket.h>
 +#include <unistd.h>
++#ifdef __APPLE__
++#include <cerrno>
++#include <climits>
++#include <cstring>
++#include <dlfcn.h>
++#include <pwd.h>
++#include <signal.h>
++#include <spawn.h>
++#include <sys/wait.h>
++#endif
 +typedef int sock_t;
 +#define INVALID_SOCKET (-1)
 +#define closesock close
@@ -316,19 +327,129 @@ index 0000000000000000000000000000000000000000..5a14ab19cd3d9e97a346641caf3e4a24
 +	return resp.rfind("HTTP/1.1 101", 0) == 0;
 +}
 +
++static sock_t ConnectServer(int port, int timeoutMs)
++{
++	sock_t s = ConnectLoopback(port, timeoutMs);
++	if (s != INVALID_SOCKET && !Handshake(s, port)) {
++		closesock(s);
++		s = INVALID_SOCKET;
++	}
++	return s;
++}
++
++#ifdef __APPLE__
++static std::atomic<pid_t> brokerPid{ 0 };
++
++// runtime/bin/osx64/vrclient.dylib -> runtime/libexec/opencomposite/oc-webbroker
++static std::string BrokerPath()
++{
++	Dl_info info;
++	if (!dladdr((const void*)&BrokerPath, &info) || !info.dli_fname)
++		return "";
++	char real[PATH_MAX];
++	if (!realpath(info.dli_fname, real))
++		return "";
++	std::string dir = real;
++	dir.erase(dir.find_last_of('/'));
++	std::string exe = dir + "/../../libexec/opencomposite/oc-webbroker";
++	return realpath(exe.c_str(), real) ? real : exe;
++}
++
++// The game may be a Wine process (via a vrclient bridge): the broker is native, so it gets a fresh environment
++// (no WINE*, CX_*, DYLD_*), no inherited descriptors or signal state, and its own session.
++static bool SpawnBroker(int port)
++{
++	std::string exe = BrokerPath();
++	if (exe.empty() || access(exe.c_str(), X_OK) != 0) {
++		OOVR_LOGF("Web overlay broker not found (%s)", exe.c_str());
++		return false;
++	}
++	std::vector<std::string> env;
++	const char* home = getenv("HOME");
++	if (!home || home[0] != '/') {
++		passwd* pw = getpwuid(getuid());
++		home = pw ? pw->pw_dir : "/tmp";
++	}
++	env.push_back(std::string("HOME=") + home);
++	env.push_back("PATH=/usr/bin:/bin:/usr/sbin:/sbin");
++	static const char* keep[] = { "USER", "LOGNAME", "TMPDIR", "LANG", "XR_RUNTIME_JSON", "XR_LOADER_DEBUG",
++		"XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_RUNTIME_DIR", "OC_WEB_FPS", "OC_WEB_DUMP",
++		"OC_WEB_NO_XR" };
++	for (const char* k : keep)
++		if (const char* v = getenv(k))
++			env.push_back(std::string(k) + "=" + v);
++	std::vector<char*> envp;
++	for (auto& e : env)
++		envp.push_back(&e[0]);
++	envp.push_back(nullptr);
++	std::string portArg = std::to_string(port);
++	char* argv[] = { &exe[0], (char*)"--port", &portArg[0], nullptr };
++
++	posix_spawn_file_actions_t fa;
++	posix_spawn_file_actions_init(&fa);
++	posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
++	posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
++	posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
++	posix_spawnattr_t attr;
++	posix_spawnattr_init(&attr);
++	posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
++	sigset_t none, all;
++	sigemptyset(&none);
++	sigfillset(&all);
++	posix_spawnattr_setsigmask(&attr, &none);
++	posix_spawnattr_setsigdefault(&attr, &all);
++	pid_t pid = 0;
++	int err = posix_spawn(&pid, exe.c_str(), &fa, &attr, argv, envp.data());
++	posix_spawn_file_actions_destroy(&fa);
++	posix_spawnattr_destroy(&attr);
++	if (err) {
++		OOVR_LOGF("Can't start %s: %s", exe.c_str(), strerror(err));
++		return false;
++	}
++	brokerPid = pid;
++	OOVR_LOGF("Started web overlay broker %s (pid %d)", exe.c_str(), (int)pid);
++	std::thread([pid]() {
++		int st;
++		while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {
++		}
++		pid_t expected = pid;
++		brokerPid.compare_exchange_strong(expected, 0);
++	}).detach();
++	return true;
++}
++#endif
++
++// Connects to the mailbox server; on macOS, starts oc-webbroker first if nothing listens yet.
++static sock_t ConnectOrStartServer(int port)
++{
++	sock_t s = ConnectServer(port, 300);
++#ifdef __APPLE__
++	if (s != INVALID_SOCKET)
++		return s;
++	static std::mutex spawnLock;
++	std::lock_guard<std::mutex> g(spawnLock);
++	if (brokerPid == 0 && !SpawnBroker(port))
++		return INVALID_SOCKET;
++	for (int i = 0; i < 50 && s == INVALID_SOCKET && brokerPid != 0; i++) {
++		std::this_thread::sleep_for(std::chrono::milliseconds(100));
++		s = ConnectServer(port, 300);
++	}
++#endif
++	return s;
++}
++
 +std::unique_ptr<WebMailbox> WebMailbox::Open(const std::string& name)
 +{
 +	if (!oovr_global_configuration.WebOverlays())
 +		return nullptr;
 +	int port = MailboxPort();
-+	sock_t s = ConnectLoopback(port, 300);
-+	if (s == INVALID_SOCKET || !Handshake(s, port)) {
-+		if (s != INVALID_SOCKET)
-+			closesock(s);
++	sock_t s = ConnectOrStartServer(port);
++	if (s == INVALID_SOCKET) {
 +		if (!serverUnavailable.exchange(true))
 +			OOVR_LOGF("Mailbox server on 127.0.0.1:%d not reachable: no web overlays", port);
 +		return nullptr;
 +	}
++	serverUnavailable = false;
 +	std::unique_ptr<WebMailbox> mb(new WebMailbox());
 +	mb->name = name;
 +	mb->impl = std::make_shared<Impl>();
@@ -339,6 +460,11 @@ index 0000000000000000000000000000000000000000..5a14ab19cd3d9e97a346641caf3e4a24
 +	std::thread([impl]() { impl->Reader(); }).detach();
 +	if (!impl->SendFrame(0x1, "mailbox_open " + name))
 +		return nullptr;
++#ifdef _WIN32
++	impl->SendFrame(0x1, "oc_vrclient " + std::to_string(GetCurrentProcessId()));
++#else
++	impl->SendFrame(0x1, "oc_vrclient " + std::to_string(getpid()));
++#endif
 +	OOVR_LOGF("Mailbox '%s' opened on 127.0.0.1:%d", name.c_str(), port);
 +	return mb;
 +}
@@ -444,17 +570,20 @@ index 0000000000000000000000000000000000000000..5a14ab19cd3d9e97a346641caf3e4a24
 +	static std::mutex controlLock;
 +	std::lock_guard<std::mutex> g(controlLock);
 +
++	// A Windows path from a Windows build; a unix path on macOS (a vrclient bridge converts the game's path).
 +	std::string p = path;
++#ifdef _WIN32
 +	for (auto& c : p)
 +		if (c == '/')
 +			c = '\\';
-+	while (!p.empty() && p.back() == '\\')
++#endif
++	while (p.size() > 1 && (p.back() == '\\' || p.back() == '/'))
 +		p.pop_back();
 +	// vrserver names a web root after its last two path components ("hlvr/webui").
 +	std::string name = p;
-+	size_t last = p.find_last_of('\\');
++	size_t last = p.find_last_of("\\/");
 +	if (last != std::string::npos && last > 0) {
-+		size_t prev = p.find_last_of('\\', last - 1);
++		size_t prev = p.find_last_of("\\/", last - 1);
 +		name = p.substr(prev == std::string::npos ? 0 : prev + 1);
 +		for (auto& c : name)
 +			if (c == '\\')
@@ -518,10 +647,10 @@ index 0000000000000000000000000000000000000000..5a14ab19cd3d9e97a346641caf3e4a24
 +} // namespace web_overlays
 diff --git a/OpenOVR/Misc/WebMailbox.h b/OpenOVR/Misc/WebMailbox.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6ce930cbf9159bef4b64e99b1f6ee7f5173e8263
+index 0000000000000000000000000000000000000000..87ca71bc477a6774c98bd6051c8aebbb651acae1
 --- /dev/null
 +++ b/OpenOVR/Misc/WebMailbox.h
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,43 @@
 +#pragma once
 +
 +#include <memory>
@@ -529,10 +658,11 @@ index 0000000000000000000000000000000000000000..6ce930cbf9159bef4b64e99b1f6ee7f5
 +
 +// SteamVR's mailbox protocol (vrserver's web server, ws://127.0.0.1:27062): one WebSocket per mailbox, text frames
 +// "mailbox_open <name>", "mailbox_send <name> <json>"; received frames are the JSON messages sent to <name>.
-+// Loopback only, no TLS. MacVR's macvr-broker plays SteamVR's server.
++// Loopback only, no TLS. opencomposite-macos's oc-webbroker plays SteamVR's server; on macOS, Open() starts it
++// (next to vrclient.dylib, in libexec/opencomposite) when nothing listens yet.
 +class WebMailbox {
 +public:
-+	// Connects and opens `name`. Returns null when the server isn't reachable (short timeout).
++	// Connects and opens `name`. Returns null when the server isn't reachable and can't be started.
 +	static std::unique_ptr<WebMailbox> Open(const std::string& name);
 +	~WebMailbox();
 +
