@@ -19,7 +19,7 @@ jobs:
           submodules: recursive
 
       - name: Tools
-        run: brew install ninja ccache
+        run: brew install ninja ccache vulkan-headers
 
       - uses: actions/cache@v4
         with:
