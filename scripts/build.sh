@@ -6,9 +6,10 @@
 #   install/runtime/bin/osx64/vrclient.dylib            universal (arm64 + x86_64), ad-hoc signed
 #   install/runtime/bin/osx64/libopenxr_loader.dylib    universal OpenXR loader (openxr-sdk 1.1.65), found via @loader_path
 #   install/runtime/bin/osx64/version.txt
+#   install/runtime/share/opencomposite/build-info                    version=<VERSION>, commit, upstream, patches
 #   install/runtime/libexec/opencomposite/oc-webbroker, oc-webhelper   web overlays (arm64, Swift), ad-hoc signed
 #   tests/ovr_metal                                      arm64 test app (tests/openvr-metal), unless --no-test
-# Environment: OC_RELEASE (version label, default git describe), BUILD_TYPE (default RelWithDebInfo), NINJA_FLAGS.
+# Environment: OC_RELEASE (version label, default git describe; a v<x.y.z> tag must match VERSION), BUILD_TYPE (default RelWithDebInfo), NINJA_FLAGS.
 # ccache is used when found.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,6 +40,9 @@ src="$ROOT/third_party/opencomposite"
 [[ -f "$src/DrvOpenXR/tmp_gfx/TemporaryMetal.cpp" ]] || { echo "patches not applied: run scripts/patches.sh apply" >&2; exit 1; }
 oc_rev="$(git -C "$src" rev-parse --short HEAD)"
 our_rev="${OC_RELEASE:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown)}"
+release="$(cat "$ROOT/VERSION")"
+[[ "$release" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "VERSION is not x.y.z: $release" >&2; exit 1; }
+[[ "${OC_RELEASE:-}" != v* || "$OC_RELEASE" == "v$release" ]] || { echo "tag $OC_RELEASE does not match VERSION $release" >&2; exit 1; }
 version="$oc_rev opencomposite-macos $our_rev"
 
 echo "==> openxr-loader (universal)"
@@ -77,6 +81,17 @@ loader_name="${loader_name##*/}"
 cp -L "$loader/libopenxr_loader.dylib" "$bin/$loader_name"
 [[ "$loader_name" == libopenxr_loader.dylib ]] || ln -s "$loader_name" "$bin/libopenxr_loader.dylib"
 echo "$version" > "$bin/version.txt"
+share="$OUT/install/runtime/share/opencomposite"
+mkdir -p "$share"
+{
+	echo "version=$release"
+	echo "commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+	echo "describe=$our_rev"
+	echo "opencomposite=$(git -C "$src" rev-parse HEAD)"
+	echo "openxr-loader=$(git -C "$ROOT/third_party/openxr-sdk" describe --tags --always 2>/dev/null || echo unknown)"
+	echo "patches=$(cd "$ROOT/patches/opencomposite" && ls *.patch | sed 's/\.patch$//' | tr '\n' ' ' | sed 's/ $//')"
+	echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "$share/build-info"
 codesign --force --sign - "$bin/$loader_name" "$bin/vrclient.dylib"
 
 libexec="$OUT/install/runtime/libexec/opencomposite"
