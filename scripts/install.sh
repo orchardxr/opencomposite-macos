@@ -16,50 +16,92 @@ WEB_LOGS="$HOME/Library/Logs/OpenComposite"
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 
-# Edits the vrpath with JavaScript for Automation (always present on macOS); plutil can't hold the file's nulls.
-vrpath() {
-	local js
-	js="$(mktemp -t oc-vrpath).js"
-	cat > "$js" <<'JS'
-ObjC.import('Foundation');
-function run(argv) {
-	const [file, op, rt, base] = argv;
-	const fm = $.NSFileManager.defaultManager;
-	let j = {};
-	if (fm.fileExistsAtPath(file)) {
-		const s = $.NSString.stringWithContentsOfFileEncodingError(file, $.NSUTF8StringEncoding, null);
-		j = JSON.parse(ObjC.unwrap(s));
-	}
-	const runtimes = (Array.isArray(j.runtime) ? j.runtime : []).filter(r => r.replace(/\/+$/, '') !== rt);
-	if (op === 'list')
-		return (Array.isArray(j.runtime) ? j.runtime : []).join('\n');
-	if (op === 'add') {
-		j.runtime = [rt, ...runtimes];
-		if (!Array.isArray(j.config) || !j.config.length) j.config = [base + '/config'];
-		if (!Array.isArray(j.log) || !j.log.length) j.log = [base + '/logs'];
-		if (!('external_drivers' in j)) j.external_drivers = null;
-		j.jsonid = 'vrpathreg';
-		j.version = 1;
-	} else if (op === 'remove') {
-		j.runtime = runtimes;
-		const ours = p => typeof p === 'string' && p.startsWith(base + '/');
-		if (Array.isArray(j.config)) j.config = j.config.filter(p => !ours(p));
-		if (Array.isArray(j.log)) j.log = j.log.filter(p => !ours(p));
-		if (!runtimes.length && !(j.config || []).length && !(j.log || []).length && !j.external_drivers) {
-			fm.removeItemAtPathError(file, null);
-			return 'removed';
-		}
-	} else {
-		throw new Error('bad op ' + op);
-	}
-	fm.createDirectoryAtPathWithIntermediateDirectoriesAttributesError($(file).stringByDeletingLastPathComponent, true, $(), null);
-	if (!$(JSON.stringify(j, null, '\t') + '\n').writeToFileAtomicallyEncodingError(file, true, $.NSUTF8StringEncoding, null))
-		throw new Error('cannot write ' + file);
-	return 'written';
+# openvrpaths.vrpath is JSON; plutil (part of macOS) reads and edits it in place and keeps its nulls.
+json_str() {
+	local v="${1//\\/\\\\}"
+	printf '"%s"' "${v//\"/\\\"}"
 }
-JS
-	osascript -l JavaScript "$js" "$VRPATH" "$1" "$RUNTIME" "$DEST"
-	rm -f "$js"
+
+# Prints the strings of array <key>, one per line (nothing if absent).
+vr_list() {
+	local i=0 v
+	[[ -f "$VRPATH" ]] || return 0
+	while v="$(plutil -extract "$1.$i" raw -o - "$VRPATH" 2> /dev/null)"; do
+		printf '%s\n' "$v"
+		i=$((i + 1))
+	done
+}
+
+# JSON array of the non-empty lines on stdin.
+json_array() {
+	local out="" line
+	while IFS= read -r line; do
+		[[ -n "$line" ]] || continue
+		out+="${out:+,}$(json_str "$line")"
+	done
+	printf '[%s]' "$out"
+}
+
+vr_set() { # <key> <json>
+	if plutil -type "$1" "$VRPATH" > /dev/null 2>&1; then
+		plutil -replace "$1" -json "$2" "$VRPATH"
+	else
+		plutil -insert "$1" -json "$2" "$VRPATH"
+	fi
+}
+
+ours() { [[ "$1" == "$DEST/"* ]]; }
+same_runtime() { [[ "${1%"${1##*[!/]}"}" == "$RUNTIME" ]]; }
+without() { # <predicate>: stdin lines for which it is false
+	local line
+	while IFS= read -r line; do "$1" "$line" || printf '%s\n' "$line"; done
+}
+
+vrpath() {
+	local others config log
+	case "$1" in
+		list)
+			vr_list runtime
+			;;
+		add)
+			if [[ ! -f "$VRPATH" ]]; then
+				mkdir -p "$(dirname "$VRPATH")"
+				printf '{\n\t"config": [%s],\n\t"external_drivers": null,\n\t"jsonid": "vrpathreg",\n\t"log": [%s],\n\t"runtime": [%s],\n\t"version": 1\n}\n' \
+					"$(json_str "$DEST/config")" "$(json_str "$DEST/logs")" "$(json_str "$RUNTIME")" > "$VRPATH"
+				return
+			fi
+			others="$(vr_list runtime | without same_runtime)"
+			vr_set runtime "$(printf '%s\n%s\n' "$RUNTIME" "$others" | json_array)"
+			[[ -n "$(vr_list config)" ]] || vr_set config "$(echo "$DEST/config" | json_array)"
+			[[ -n "$(vr_list log)" ]] || vr_set log "$(echo "$DEST/logs" | json_array)"
+			plutil -type external_drivers "$VRPATH" > /dev/null 2>&1 || vr_set external_drivers null
+			vr_set jsonid '"vrpathreg"'
+			vr_set version 1
+			plutil -convert json -r "$VRPATH"
+			;;
+		remove)
+			others="$(vr_list runtime | without same_runtime)"
+			config="$(vr_list config | without ours)"
+			log="$(vr_list log | without ours)"
+			# external_drivers null reads as type "(any)"
+			if [[ -z "$others$config$log" ]] && [[ "$(plutil -type external_drivers "$VRPATH" 2> /dev/null || echo none)" =~ ^(\(any\)|none)$ ]]; then
+				rm -f "$VRPATH"
+				echo removed
+				return
+			fi
+			vr_set runtime "$(printf '%s\n' "$others" | json_array)"
+			if plutil -type config "$VRPATH" > /dev/null 2>&1; then vr_set config "$(printf '%s\n' "$config" | json_array)"; fi
+			if plutil -type log "$VRPATH" > /dev/null 2>&1; then vr_set log "$(printf '%s\n' "$log" | json_array)"; fi
+			plutil -convert json -r "$VRPATH"
+			echo written
+			;;
+	esac
+}
+
+installed_version() {
+	local v
+	v="$(sed -n 's/^version=//p' "$RUNTIME/share/opencomposite/build-info" 2> /dev/null)"
+	echo "${v:-?} ($(cat "$RUNTIME/bin/osx64/version.txt" 2> /dev/null || echo '?'))"
 }
 
 do_install() {
@@ -82,7 +124,7 @@ do_install() {
 	rm -rf "$RUNTIME"
 	mv "$RUNTIME.new" "$RUNTIME"
 	vrpath add > /dev/null
-	echo "installed $(cat "$RUNTIME/bin/osx64/version.txt" 2> /dev/null || echo '?') to $RUNTIME"
+	echo "installed $(installed_version) to $RUNTIME"
 	echo "registered in $VRPATH"
 }
 
@@ -114,7 +156,7 @@ do_status() {
 		echo "  (none)"
 	fi
 	if [[ -f "$RUNTIME/bin/osx64/vrclient.dylib" ]]; then
-		echo "installed: $RUNTIME ($(cat "$RUNTIME/bin/osx64/version.txt" 2> /dev/null || echo '?'))"
+		echo "installed: $RUNTIME ($(installed_version))"
 		[[ "$(vrpath list | head -1)" == "$RUNTIME" ]] && echo "active:    yes" || echo "active:    no (another runtime is listed first)"
 		if pgrep -f "$RUNTIME/libexec/opencomposite/oc-webbroker" > /dev/null; then
 			echo "web overlays: broker running (log $WEB_LOGS/web-overlays.log)"

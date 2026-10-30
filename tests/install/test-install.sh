@@ -12,12 +12,21 @@ unset OPENCOMPOSITE_HOME
 VRPATH="$HOME/Library/Application Support/OpenVR/.openvr/openvrpaths.vrpath"
 RT="$HOME/Library/Application Support/OpenComposite/runtime"
 fail() { echo "FAIL: $*" >&2; exit 1; }
-runtimes() { osascript -l JavaScript -e "JSON.parse(ObjC.unwrap(\$.NSString.stringWithContentsOfFileEncodingError('$VRPATH', 4, null))).runtime.join('|')"; }
+entries() { # <key>: the array's strings joined with |
+	local i=0 v out=""
+	while v="$(plutil -extract "$1.$i" raw -o - "$VRPATH" 2> /dev/null)"; do
+		out+="${out:+|}$v"
+		i=$((i + 1))
+	done
+	printf '%s' "$out"
+}
+runtimes() { entries runtime; }
 
 echo "== fresh install"
 "$INSTALL" install
 [[ -f "$RT/bin/osx64/vrclient.dylib" && -e "$RT/bin/osx64/libopenxr_loader.dylib" ]] || fail "runtime not copied"
 [[ "$(runtimes)" == "$RT" ]] || fail "vrpath runtime list: $(runtimes)"
+grep -qE '^version=[0-9]+\.[0-9]+\.[0-9]+$' "$RT/share/opencomposite/build-info" || fail "no version= in build-info"
 for exe in oc-webbroker oc-webhelper; do
 	[[ -x "$RT/libexec/opencomposite/$exe" ]] || fail "$exe not installed"
 	codesign --verify "$RT/libexec/opencomposite/$exe" || fail "$exe not validly signed"
@@ -56,10 +65,30 @@ JSON
 "$INSTALL" install
 "$INSTALL" install
 [[ "$(runtimes)" == "$RT|$steamvr" ]] || fail "vrpath runtime list after reinstall: $(runtimes)"
-grep -q '"external_drivers": null' "$VRPATH" || fail "external_drivers lost"
-grep -q 'Steam/config' "$VRPATH" || fail "config lost"
+[[ "$(plutil -type external_drivers "$VRPATH")" == "(any)" ]] || fail "external_drivers null lost"
+[[ "$(entries config)" == "$HOME/Library/Application Support/Steam/config" ]] || fail "config changed: $(entries config)"
+[[ "$(entries log)" == "$HOME/Library/Application Support/Steam/logs" ]] || fail "log changed: $(entries log)"
 echo "== uninstall (SteamVR stays)"
 "$INSTALL" uninstall
 [[ "$(runtimes)" == "$steamvr" ]] || fail "vrpath runtime list after uninstall: $(runtimes)"
 grep -q 'OpenComposite' "$VRPATH" && fail "OpenComposite still in vrpath"
+plutil -convert json -o /dev/null "$VRPATH" || fail "vrpath not valid after uninstall"
+
+echo "== install between other runtimes, with our old entry not first"
+other="/Users/someone/Other Runtime"
+cat > "$VRPATH" <<JSON
+{
+	"external_drivers": null,
+	"jsonid": "vrpathreg",
+	"runtime": [ "$steamvr", "$RT/", "$other" ],
+	"version": 1
+}
+JSON
+"$INSTALL" install
+[[ "$(runtimes)" == "$RT|$steamvr|$other" ]] || fail "vrpath runtime list: $(runtimes)"
+[[ "$(entries config)" == "$HOME/Library/Application Support/OpenComposite/config" ]] || fail "config not added: $(entries config)"
+"$INSTALL" uninstall
+[[ "$(runtimes)" == "$steamvr|$other" ]] || fail "vrpath runtime list after uninstall: $(runtimes)"
+[[ -z "$(entries config)$(entries log)" ]] || fail "our config/log left: $(entries config) $(entries log)"
+plutil -convert json -o /dev/null "$VRPATH" || fail "vrpath not valid"
 echo "PASS"
