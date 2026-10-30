@@ -1,0 +1,83 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Tools
+        run: brew install ninja ccache
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('.gitmodules', 'patches/**') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ hashFiles('.gitmodules', 'patches/**') }}-
+            ccache-${{ runner.os }}-
+
+      - name: Apply patches
+        run: scripts/patches.sh apply
+
+      - name: Build
+        env:
+          OC_RELEASE: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: scripts/build.sh
+
+      - name: Check slices and signatures
+        run: |
+          for f in build/install/runtime/bin/osx64/*.dylib; do
+            lipo "$f" -verify_arch arm64 x86_64
+            lipo -info "$f"
+            codesign --verify "$f"
+          done
+
+      - name: Install test (temporary HOME)
+        run: tests/install/test-install.sh
+
+      - name: Package
+        id: package
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            name="opencomposite-macos-$GITHUB_REF_NAME"
+          else
+            name="opencomposite-macos-${GITHUB_SHA::8}"
+          fi
+          scripts/package.sh "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: build/dist/${{ steps.package.outputs.name }}.zip
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
+            --notes "Universal (arm64 + x86_64) native macOS OpenComposite. Unzip and run ./install.sh. Corresponding source: this tag (submodules + patches/opencomposite)."
