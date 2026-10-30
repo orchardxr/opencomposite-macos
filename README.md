@@ -3,10 +3,20 @@
 Native macOS [OpenComposite](https://gitlab.com/znixian/OpenOVR): an OpenVR runtime (`vrclient.dylib`) that
 translates OpenVR to OpenXR, with a Metal compositor (`vr::TextureType_Metal` submits, `XR_KHR_metal_enable`
 swapchains). It is installed once per user as the shared OpenVR runtime, the way OpenComposite is used on Linux, and
-any OpenVR client on the Mac loads it: native macOS OpenVR apps through `openvr_api`, and Windows games through a
-vrclient bridge (VarboR's) that forwards to it.
+any OpenVR client on the Mac loads it:
+
+- Native macOS OpenVR games (`vr::TextureType_Metal`) use this runtime directly through `openvr_api`. This path is
+  barely tested so far.
+- Windows games reach it through [orchardxr/varbor](https://github.com/orchardxr/varbor), whose vrclient bridge
+  forwards to it.
+
+Frames go to an OpenXR runtime with `XR_KHR_metal_enable`, such as WiVRn's server from
+[orchardxr/wivrn-macos](https://github.com/orchardxr/wivrn-macos), which streams to any WiVRn-supported headset
+(tested on Quest 3S).
 
 Builds are universal (arm64 + x86_64) and ad-hoc signed.
+
+Part of orchardxr: vibe-coded support for VR on macOS: native and Windows games, on Apple Silicon, streamed via WiVRn.
 
 ## Layout
 
@@ -33,7 +43,7 @@ of this repo.
 |---|---|
 | 0002 log-stream-construct-on-first-use | log stream usable from other static initialisers |
 | 0003 vulkan-without-win32-memory-and-core-1-1 | Vulkan: only device extensions that exist (no Win32 external memory), no core-1.1 entry points on 1.0 instances |
-| 0004 openvr-sdk-2.15.6-interfaces | interfaces of OpenVR 2.15.6 (current games, e.g. Half-Life: Alyx) |
+| 0004 openvr-sdk-2.15.6-interfaces | interfaces of OpenVR 2.15.6 (current games) |
 | 0006 copy-submitted-bounds-and-runtime-refresh-rate | copy only the submitted texture bounds; display refresh rate from the runtime (XR_FB_display_refresh_rate) |
 | 0007 quiet-no-vr-and-runtime-loss | no runtime or headset: an init error instead of a message box; runtime loss: stop the frame loop, send VREvent_Quit |
 | 0008 web-overlay-mailbox | mailbox/control-panel interfaces SteamVR web overlays use |
