@@ -1,0 +1,58 @@
+From: opencomposite-macos
+Subject: [PATCH] macos-user-active-runtime
+
+---
+ DrvOpenXR/DrvOpenXR.cpp | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/DrvOpenXR/DrvOpenXR.cpp b/DrvOpenXR/DrvOpenXR.cpp
+index 6b2bfa81855105ca444b49e7803eff03f95b2511..bc2eac0111bdf64aa30c6c5b1a91eeab5abc7e72 100644
+--- a/DrvOpenXR/DrvOpenXR.cpp
++++ b/DrvOpenXR/DrvOpenXR.cpp
+@@ -35,6 +35,8 @@ std::string GetExeName()
+ #include <libgen.h>
+ #include <limits.h>
+ #include <mach-o/dyld.h>
++#include <stdlib.h>
++#include <unistd.h>
+ 
+ std::string GetExeName()
+ {
+@@ -45,6 +47,26 @@ std::string GetExeName()
+ 	}
+ 	return { "" };
+ }
++
++// The macOS OpenXR loader only reads /usr/local/share/openxr/1/active_runtime.json; runtimes (WiVRn) set the
++// per-user XDG one, as on Linux. Point the loader at it unless XR_RUNTIME_JSON or the system file says otherwise.
++static void UseUserActiveRuntime()
++{
++	if (getenv("XR_RUNTIME_JSON") || access("/usr/local/share/openxr/1/active_runtime.json", F_OK) == 0)
++		return;
++	std::string dir;
++	if (const char* xdg = getenv("XDG_CONFIG_HOME"); xdg && *xdg == '/')
++		dir = xdg;
++	else if (const char* home = getenv("HOME"); home && *home)
++		dir = std::string(home) + "/.config";
++	else
++		return;
++	char real[PATH_MAX];
++	if (!realpath((dir + "/openxr/1/active_runtime.json").c_str(), real))
++		return;
++	setenv("XR_RUNTIME_JSON", real, 0);
++	OOVR_LOGF("Using the user's active OpenXR runtime %s", real);
++}
+ #else
+ #include <libgen.h> // basename
+ #include <linux/limits.h> // PATH_MAX
+@@ -150,6 +172,10 @@ IBackend* DrvOpenXR::CreateOpenXRBackend(const char* startupInfo, vr::EVRInitErr
+ 	OOVR_LOGF("Set OpenXR validation file path: %s", XR_VALIDATION_FILE_NAME);
+ #endif
+ 
++#ifdef __APPLE__
++	UseUserActiveRuntime();
++#endif
++
+ 	// Enumerate the available extensions
+ 	uint32_t availableExtensionsCount = 0;
+ 	if (XrResult res = xrEnumerateInstanceExtensionProperties(nullptr, 0, &availableExtensionsCount, nullptr); XR_FAILED(res)) {

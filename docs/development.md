@@ -37,6 +37,7 @@ of this repo.
 | 0009 macos-native-build | CMake and sources build natively on macOS (`bin/osx64/vrclient.dylib`) |
 | 0010 metal-compositor | Metal compositor and `XR_KHR_metal_enable` session |
 | 0011 metal-submit-sync | `oc_metal_submit_sync_begin` / `oc_metal_submit_sync_end` exports for bridges that submit from another thread |
+| 0012 macos-user-active-runtime | the macOS OpenXR loader reads only `/usr/local/share/openxr/1/active_runtime.json`; without it or `XR_RUNTIME_JSON`, use the per-user `$XDG_CONFIG_HOME` (`~/.config`) `openxr/1/active_runtime.json` that WiVRn sets |
 
 `scripts/patches.sh new <name>` exports the unstaged changes in `third_party/opencomposite` as the next patch. To
 bump upstream, check out the new commit in the submodule, `git add third_party/opencomposite`, then
