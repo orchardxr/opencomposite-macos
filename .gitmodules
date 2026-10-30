@@ -1,0 +1,7 @@
+[submodule "third_party/opencomposite"]
+	path = third_party/opencomposite
+	url = https://gitlab.com/znixian/OpenOVR.git
+	ignore = dirty
+[submodule "third_party/openxr-sdk"]
+	path = third_party/openxr-sdk
+	url = https://github.com/KhronosGroup/OpenXR-SDK-Source.git
