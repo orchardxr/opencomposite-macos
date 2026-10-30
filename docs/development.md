@@ -12,7 +12,8 @@ Building, testing and releasing opencomposite-macos. For installing and using it
 | `web-overlays` | Swift package: `oc-webbroker`, `oc-webhelper` and the overlay compositor (`COverlayXR`), see [web-overlays.md](web-overlays.md) |
 | `scripts/patches.sh` | `apply` / `reset` / `status` / `new <name>` for the patch stack |
 | `scripts/build.sh` | builds the install tree and the test app |
-| `scripts/install.sh` | per-user install / uninstall / status |
+| `scripts/install.sh` | per-user install / uninstall / status (edits `openvrpaths.vrpath` with `plutil`) |
+| `VERSION` | release version `x.y.z` |
 | `scripts/package.sh` | release zip |
 | `scripts/run-ovr-metal.sh` | runs the Metal test app against an OpenXR runtime |
 | `tests/openvr-metal` | native OpenVR app submitting Metal textures |
@@ -37,7 +38,7 @@ of this repo.
 | 0009 macos-native-build | CMake and sources build natively on macOS (`bin/osx64/vrclient.dylib`) |
 | 0010 metal-compositor | Metal compositor and `XR_KHR_metal_enable` session |
 | 0011 metal-submit-sync | `oc_metal_submit_sync_begin` / `oc_metal_submit_sync_end` exports for bridges that submit from another thread |
-| 0012 macos-user-active-runtime | the macOS OpenXR loader reads only `/usr/local/share/openxr/1/active_runtime.json`; without it or `XR_RUNTIME_JSON`, use the per-user `$XDG_CONFIG_HOME` (`~/.config`) `openxr/1/active_runtime.json` that WiVRn sets |
+| 0012 macos-user-active-runtime | the macOS OpenXR loader reads only `XR_RUNTIME_JSON` and `/usr/local/share/openxr/1/active_runtime[.<arch>].json`; without those, use the per-user `$XDG_CONFIG_HOME` (`~/.config`) one that WiVRn sets (see [OpenXR runtime discovery](#openxr-runtime-discovery-on-macos)) |
 
 `scripts/patches.sh new <name>` exports the unstaged changes in `third_party/opencomposite` as the next patch. To
 bump upstream, check out the new commit in the submodule, `git add third_party/opencomposite`, then
@@ -59,7 +60,8 @@ Output in `build/install/runtime`:
 ```
 runtime/bin/osx64/vrclient.dylib           universal, exports VRClientCoreFactory, oc_metal_submit_sync_begin/end
 runtime/bin/osx64/libopenxr_loader.dylib   universal OpenXR loader 1.1.65 (vrclient finds it via @loader_path)
-runtime/bin/osx64/version.txt
+runtime/bin/osx64/version.txt              version label compiled into vrclient (upstream rev, ours)
+runtime/share/opencomposite/build-info     version=<x.y.z> (from VERSION), commit, describe, opencomposite, openxr-loader, patches, built
 runtime/libexec/opencomposite/oc-webbroker  arm64, web overlay broker (started by vrclient.dylib on demand)
 runtime/libexec/opencomposite/oc-webhelper  arm64, web overlay renderer, links the loader in bin/osx64
 ```
@@ -74,10 +76,25 @@ whose headers and dylib they use. `scripts/install.sh` installs this tree when i
    `~/Library/Application Support/OpenVR/.openvr/openvrpaths.vrpath` and takes the first entry of `runtime`
    (`VR_OVERRIDE=<runtime dir>` overrides this in `openvr_api`).
 2. It loads `<runtime>/bin/osx64/vrclient.dylib` and calls `VRClientCoreFactory("IVRClientCore_003")`.
-3. OpenComposite loads the OpenXR loader next to it, which finds the OpenXR runtime the usual way: `XR_RUNTIME_JSON`,
-   else the active runtime manifest (see the OpenXR loader documentation).
+3. OpenComposite loads the OpenXR loader next to it, which finds the OpenXR runtime (see below).
 4. The OpenXR runtime must offer `XR_KHR_metal_enable`. Monado (and WiVRn's server) get it from the Metal patch in
    [orchardxr/wivrn-macos](https://github.com/orchardxr/wivrn-macos).
+
+### OpenXR runtime discovery on macOS
+
+The upstream OpenXR loader (1.1.65, `src/common/platform_utils.hpp` and `src/loader/manifest_file.cpp`) does on macOS:
+
+1. `XR_RUNTIME_JSON`, if set (read with `issetugid` checks, so ignored in setuid processes).
+2. Else `/usr/local/share/openxr/1/active_runtime.<arch>.json` (`aarch64` or `x86_64`), then
+   `/usr/local/share/openxr/1/active_runtime.json`.
+3. Nothing else: unlike Linux it does not read `$XDG_CONFIG_HOME/openxr/1` (`~/.config/openxr/1`), `XDG_CONFIG_DIRS`
+   or `/etc/xdg`, and there is no registry.
+
+WiVRn (orchardxr/wivrn-macos) sets the per-user `~/.config/openxr/1/active_runtime.json`, as on Linux, so patch 0012
+fills the gap: before the first OpenXR call, if neither `XR_RUNTIME_JSON` nor one of the two system files exists,
+vrclient sets `XR_RUNTIME_JSON` to the per-user file (`$XDG_CONFIG_HOME`, else `~/.config`; the arch-decorated name
+first; symlinks resolved). The variable is inherited by the web overlay broker and helper; the helper does the same
+lookup itself when started without it. The system file still wins, as with the loader on its own.
 
 The installer puts `~/Library/Application Support/OpenComposite/runtime` (or `$OPENCOMPOSITE_HOME/runtime`) first in
 that `runtime` list, creating the file if needed. Other runtimes stay behind it, and `config`, `log` and
@@ -118,7 +135,9 @@ patches, builds, checks that both dylibs have arm64 and x86_64 slices, the web o
 signatures, runs the web overlay test and the installer test,
 and uploads the zip from `scripts/package.sh` as an artifact.
 
-To release, push a `v*` tag. The workflow builds with that version label and creates a GitHub release with
+The release version is in `VERSION` (`x.y.z`); `scripts/build.sh` writes it to `build-info` (VarboR reads
+`version=` from there) and refuses a `v*` tag that doesn't match it. To release, bump `VERSION`, then push the tag
+`v<VERSION>`. The workflow builds with that version label and creates a GitHub release with
 `opencomposite-macos-<tag>.zip`: `install.sh`, `runtime/`, the README and `licenses/` (GPL-3.0 for OpenComposite, its
 bundled licences, Apache-2.0 for the OpenXR loader, MIT for our scripts). The tagged commit is the corresponding
 source.

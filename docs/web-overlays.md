@@ -98,7 +98,7 @@ game side in OpenComposite's log. The ini option `webOverlays=false` turns the w
 ## Compositor (`COverlayXR/overlay_xr.m`)
 
 - Linked against the OpenXR loader shipped in `runtime/bin/osx64` (rpath `@executable_path/../../bin/osx64`). The
-  loader finds the runtime the usual way: `XR_RUNTIME_JSON`, else the active runtime manifest; for WiVRn that is the
+  loader finds the runtime: `XR_RUNTIME_JSON` (set by vrclient from the per-user active runtime, patch 0012), else the system active runtime; for WiVRn that is the
   manifest installed by orchardxr/wivrn-macos (`share/openxr/1/openxr_wivrn.json`).
 - `XR_EXTX_overlay` session, `sessionLayersPlacement = 1` (above the game), STAGE space, `XR_KHR_metal_enable` (the
   extension OpenComposite itself needs), `XR_KHR_composition_layer_color_scale_bias` when offered. Application name

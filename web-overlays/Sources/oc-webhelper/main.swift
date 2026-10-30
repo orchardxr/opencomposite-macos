@@ -18,6 +18,26 @@ let captureHz = Double(env["OC_WEB_FPS"] ?? "") ?? 30
 let dumpDir = env["OC_WEB_DUMP"].map { URL(fileURLWithPath: $0) }
 let noXR = env["OC_WEB_NO_XR"] == "1"
 
+// As vrclient (patch 0012): the macOS OpenXR loader only reads XR_RUNTIME_JSON or /usr/local/share/openxr/1, while
+// WiVRn sets the per-user XDG active runtime. vrclient normally passes XR_RUNTIME_JSON down already.
+func activeRuntime(in dir: String) -> String? {
+    #if arch(arm64)
+    let arch = "aarch64"
+    #else
+    let arch = "x86_64"
+    #endif
+    for name in ["active_runtime.\(arch).json", "active_runtime.json"] {
+        let path = dir + "/openxr/1/" + name
+        if FileManager.default.fileExists(atPath: path) { return URL(fileURLWithPath: path).resolvingSymlinksInPath().path }
+    }
+    return nil
+}
+if env["XR_RUNTIME_JSON"] == nil && activeRuntime(in: "/usr/local/share") == nil {
+    let config = env["XDG_CONFIG_HOME"].flatMap { $0.hasPrefix("/") ? $0 : nil }
+        ?? ((env["HOME"] ?? NSHomeDirectory()) + "/.config")
+    if let user = activeRuntime(in: config) { setenv("XR_RUNTIME_JSON", user, 0) }
+}
+
 func log(_ s: String) {
     let f = DateFormatter()
     f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
