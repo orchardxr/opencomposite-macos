@@ -9,7 +9,7 @@
 #   install/runtime/share/opencomposite/build-info                    version=<VERSION>, commit, upstream, patches
 #   install/runtime/libexec/opencomposite/oc-webbroker, oc-webhelper   web overlays (arm64, Swift), ad-hoc signed
 #   tests/ovr_metal                                      arm64 test app (tests/openvr-metal), unless --no-test
-# Environment: OC_RELEASE (version label, default git describe; a v<x.y.z> tag must match VERSION), BUILD_TYPE (default RelWithDebInfo), NINJA_FLAGS.
+# Environment: VULKAN_INCLUDE (Vulkan headers dir), OC_RELEASE (version label, default git describe; a v<x.y.z> tag must match VERSION), BUILD_TYPE (default RelWithDebInfo), NINJA_FLAGS.
 # ccache is used when found.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,6 +45,13 @@ release="$(cat "$ROOT/VERSION")"
 [[ "${OC_RELEASE:-}" != v* || "$OC_RELEASE" == "v$release" ]] || { echo "tag $OC_RELEASE does not match VERSION $release" >&2; exit 1; }
 version="$oc_rev opencomposite-macos $our_rev"
 
+# Homebrew is ignored as a prefix, so name the Vulkan headers dir: VULKAN_INCLUDE, the LunarG SDK, or vulkan-headers.
+vk_inc=""
+for d in "${VULKAN_INCLUDE:-}" /usr/local/include "$(brew --prefix vulkan-headers 2>/dev/null)/include"; do
+	[[ -n "$d" && -f "$d/vulkan/vulkan.h" ]] && { vk_inc="$d"; break; }
+done
+[[ -n "$vk_inc" ]] || { echo "no Vulkan headers: brew install vulkan-headers or set VULKAN_INCLUDE" >&2; exit 1; }
+
 echo "==> openxr-loader (universal)"
 run loader-configure cmake -S "$ROOT/third_party/openxr-sdk" -B "$OUT/openxr-loader" -G Ninja -DCMAKE_BUILD_TYPE="$BT" \
 	-DCMAKE_OSX_ARCHITECTURES="$(IFS=';'; echo "${ARCHS[*]}")" -DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew -DDYNAMIC_LOADER=ON \
@@ -57,6 +64,7 @@ for arch in "${ARCHS[@]}"; do
 	echo "==> opencomposite ($arch)"
 	run "oc-$arch-configure" cmake -S "$src" -B "$OUT/oc-$arch" -G Ninja -DCMAKE_BUILD_TYPE="$BT" \
 		-DCMAKE_OSX_ARCHITECTURES="$arch" -DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew -DOC_VERSION="$version" \
+		-DOC_VULKAN_INCLUDE_DIR="$vk_inc" \
 		-DOC_OPENXR_INCLUDE_DIRS="$OUT/openxr-loader/include;$ROOT/third_party/openxr-sdk/include" \
 		-DOC_OPENXR_LIBRARY="$loader/libopenxr_loader.dylib" \
 		-DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath,@loader_path" -DCMAKE_SKIP_BUILD_RPATH=ON
