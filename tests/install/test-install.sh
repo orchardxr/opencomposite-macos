@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Exercise scripts/install.sh against a throwaway HOME: fresh install, install next to an existing SteamVR entry,
-# reinstall, and uninstall in both cases. Needs a built runtime (scripts/build.sh) or OPENCOMPOSITE_FROM.
+# Exercise scripts/install.sh against a throwaway HOME: a plain install leaves openvrpaths.vrpath alone (WiVRn
+# registers the runtime while it runs); --register next to an existing SteamVR entry, reinstall, unregister, and
+# uninstall cleaning up both the runtime and our entry (also one left by an earlier install). Needs a built runtime (scripts/build.sh) or OPENCOMPOSITE_FROM.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INSTALL="${INSTALL_SH:-$ROOT/scripts/install.sh}"
@@ -22,9 +23,15 @@ entries() { # <key>: the array's strings joined with |
 }
 runtimes() { entries runtime; }
 
-echo "== fresh install"
+echo "== fresh install (no registration)"
 "$INSTALL" install
 [[ -f "$RT/bin/osx64/vrclient.dylib" && -e "$RT/bin/osx64/libopenxr_loader.dylib" ]] || fail "runtime not copied"
+[[ ! -e "$VRPATH" && ! -e "$(dirname "$VRPATH")" ]] || fail "plain install created the vrpath"
+"$INSTALL" status | grep -q "active:    no (not registered" || fail "status of an unregistered install"
+"$INSTALL" unregister
+[[ ! -e "$VRPATH" ]] || fail "unregister created the vrpath"
+echo "== --register"
+"$INSTALL" --register
 [[ "$(runtimes)" == "$RT" ]] || fail "vrpath runtime list: $(runtimes)"
 grep -qE '^version=[0-9]+\.[0-9]+\.[0-9]+$' "$RT/share/opencomposite/build-info" || fail "no version= in build-info"
 for exe in oc-webbroker oc-webhelper; do
@@ -49,7 +56,7 @@ touch "$HOME/Library/Logs/OpenComposite/web-overlays.log"
 [[ ! -e "$RT" ]] || fail "runtime left behind"
 [[ ! -e "$HOME/Library/Logs/OpenComposite" ]] || fail "web overlay logs left behind"
 
-echo "== install next to SteamVR"
+echo "== plain install next to SteamVR leaves the vrpath byte-identical"
 steamvr="$HOME/Library/Application Support/Steam/steamapps/common/SteamVR"
 mkdir -p "$(dirname "$VRPATH")"
 cat > "$VRPATH" <<JSON
@@ -62,19 +69,55 @@ cat > "$VRPATH" <<JSON
 	"version": 1
 }
 JSON
+cp "$VRPATH" "$T/vrpath.orig"
 "$INSTALL" install
 "$INSTALL" install
+cmp -s "$VRPATH" "$T/vrpath.orig" || fail "plain install modified the vrpath: $(cat "$VRPATH")"
+"$INSTALL" status | grep -q "active:    no (not registered" || fail "status next to SteamVR"
+echo "== --register next to SteamVR, reinstall"
+"$INSTALL" install --register
+"$INSTALL" --register
 [[ "$(runtimes)" == "$RT|$steamvr" ]] || fail "vrpath runtime list after reinstall: $(runtimes)"
 [[ "$(plutil -type external_drivers "$VRPATH")" == "(any)" ]] || fail "external_drivers null lost"
 [[ "$(entries config)" == "$HOME/Library/Application Support/Steam/config" ]] || fail "config changed: $(entries config)"
 [[ "$(entries log)" == "$HOME/Library/Application Support/Steam/logs" ]] || fail "log changed: $(entries log)"
+echo "== plain reinstall keeps an existing registration, unregister removes it"
+"$INSTALL" install | grep -q "still registered" || fail "no note about the earlier registration"
+[[ "$(runtimes)" == "$RT|$steamvr" ]] || fail "plain reinstall changed the registration: $(runtimes)"
+"$INSTALL" unregister
+[[ "$(runtimes)" == "$steamvr" ]] || fail "vrpath runtime list after unregister: $(runtimes)"
+[[ -f "$RT/bin/osx64/vrclient.dylib" ]] || fail "unregister removed the runtime"
+"$INSTALL" --register
 echo "== uninstall (SteamVR stays)"
 "$INSTALL" uninstall
 [[ "$(runtimes)" == "$steamvr" ]] || fail "vrpath runtime list after uninstall: $(runtimes)"
 grep -q 'OpenComposite' "$VRPATH" && fail "OpenComposite still in vrpath"
 plutil -convert json -o /dev/null "$VRPATH" || fail "vrpath not valid after uninstall"
+[[ ! -e "$HOME/Library/Application Support/OpenComposite" ]] || fail "install dir left behind"
 
-echo "== install between other runtimes, with our old entry not first"
+echo "== uninstall cleans an earlier install's entry between other runtimes"
+cat > "$VRPATH" <<JSON
+{
+	"config": [ "$HOME/Library/Application Support/OpenComposite/config" ],
+	"external_drivers": null,
+	"jsonid": "vrpathreg",
+	"log": [ "$HOME/Library/Application Support/OpenComposite/logs" ],
+	"runtime": [ "$RT", "$steamvr" ],
+	"version": 1
+}
+JSON
+"$INSTALL" install
+"$INSTALL" uninstall
+[[ "$(runtimes)" == "$steamvr" ]] || fail "old entry not removed: $(runtimes)"
+[[ -z "$(entries config)$(entries log)" ]] || fail "old config/log left: $(entries config) $(entries log)"
+[[ ! -e "$RT" ]] || fail "runtime left behind"
+echo "== uninstall without a runtime still removes a stale entry"
+cat > "$VRPATH" <<JSON
+{ "external_drivers": null, "jsonid": "vrpathreg", "runtime": [ "$RT" ], "version": 1 }
+JSON
+"$INSTALL" uninstall
+[[ ! -e "$VRPATH" ]] || fail "vrpath with only our stale entry left behind"
+echo "== --register between other runtimes, with our old entry not first"
 other="/Users/someone/Other Runtime"
 cat > "$VRPATH" <<JSON
 {
@@ -84,7 +127,7 @@ cat > "$VRPATH" <<JSON
 	"version": 1
 }
 JSON
-"$INSTALL" install
+"$INSTALL" --register
 [[ "$(runtimes)" == "$RT|$steamvr|$other" ]] || fail "vrpath runtime list: $(runtimes)"
 [[ "$(entries config)" == "$HOME/Library/Application Support/OpenComposite/config" ]] || fail "config not added: $(entries config)"
 "$INSTALL" uninstall

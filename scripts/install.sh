@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Install OpenComposite as the user's shared OpenVR runtime on macOS, or remove it again.
-#   install.sh [install]    copy the runtime to $OPENCOMPOSITE_HOME/runtime and register it first in openvrpaths.vrpath
-#   install.sh uninstall    unregister it, stop its web overlay processes, delete $OPENCOMPOSITE_HOME and its logs
-#   install.sh status       show the registered runtimes and the installed version
+# Install the OpenComposite runtime for the current user on macOS, or remove it again.
+#   install.sh [install]          copy the runtime to $OPENCOMPOSITE_HOME/runtime; openvrpaths.vrpath is left alone
+#   install.sh [install] --register  also register it first in openvrpaths.vrpath (for use without WiVRn)
+#   install.sh unregister         remove our entry from openvrpaths.vrpath
+#   install.sh uninstall          unregister, stop its web overlay processes, delete $OPENCOMPOSITE_HOME and its logs
+#   install.sh status             show the registered runtimes and the installed version
+#
+# As on Linux, WiVRn's server registers the runtime in openvrpaths.vrpath while it runs and restores the file
+# afterwards, so a plain install needs no registration.
 #
 # OPENCOMPOSITE_HOME   install location (default ~/Library/Application Support/OpenComposite)
 # OPENCOMPOSITE_FROM   runtime to install (default: ./runtime next to this script in a release zip, else build/install/runtime)
@@ -123,18 +128,33 @@ do_install() {
 	done
 	rm -rf "$RUNTIME"
 	mv "$RUNTIME.new" "$RUNTIME"
-	vrpath add > /dev/null
 	echo "installed $(installed_version) to $RUNTIME"
-	echo "registered in $VRPATH"
+	if [[ "$1" == register ]]; then
+		vrpath add > /dev/null
+		echo "registered in $VRPATH"
+	elif registered; then
+		echo "still registered in $VRPATH (earlier install); ./install.sh unregister leaves that to WiVRn"
+	else
+		echo "not registered: WiVRn activates OpenComposite while it runs"
+	fi
+}
+
+registered() {
+	local r
+	while IFS= read -r r; do same_runtime "$r" && return 0; done < <(vrpath list)
+	return 1
+}
+
+do_unregister() {
+	registered || return 0
+	case "$(vrpath remove)" in
+		removed) echo "removed $VRPATH (nothing else was registered)" ;;
+		*) echo "unregistered from $VRPATH" ;;
+	esac
 }
 
 do_uninstall() {
-	if [[ -f "$VRPATH" ]]; then
-		case "$(vrpath remove)" in
-			removed) echo "removed $VRPATH (nothing else was registered)" ;;
-			*) echo "unregistered from $VRPATH" ;;
-		esac
-	fi
+	do_unregister
 	if pkill -f "$RUNTIME/libexec/opencomposite/oc-web" 2> /dev/null; then
 		echo "stopped the web overlay broker"
 	fi
@@ -157,7 +177,13 @@ do_status() {
 	fi
 	if [[ -f "$RUNTIME/bin/osx64/vrclient.dylib" ]]; then
 		echo "installed: $RUNTIME ($(installed_version))"
-		[[ "$(vrpath list | head -1)" == "$RUNTIME" ]] && echo "active:    yes" || echo "active:    no (another runtime is listed first)"
+		if same_runtime "$(vrpath list | head -1)"; then
+			echo "active:    yes"
+		elif registered; then
+			echo "active:    no (another runtime is listed first)"
+		else
+			echo "active:    no (not registered; WiVRn activates OpenComposite while it runs)"
+		fi
 		if pgrep -f "$RUNTIME/libexec/opencomposite/oc-webbroker" > /dev/null; then
 			echo "web overlays: broker running (log $WEB_LOGS/web-overlays.log)"
 		fi
@@ -166,9 +192,20 @@ do_status() {
 	fi
 }
 
-case "${1:-install}" in
-	install) do_install ;;
+usage="usage: install.sh [install] [--register] | unregister | uninstall | status"
+cmd="" register=""
+for arg in "$@"; do
+	case "$arg" in
+		--register) register=register ;;
+		install | unregister | uninstall | status) [[ -z "$cmd" ]] || die "$usage"; cmd="$arg" ;;
+		*) die "$usage" ;;
+	esac
+done
+cmd="${cmd:-install}"
+[[ -z "$register" || "$cmd" == install ]] || die "$usage"
+case "$cmd" in
+	install) do_install "$register" ;;
+	unregister) do_unregister ;;
 	uninstall) do_uninstall ;;
 	status) do_status ;;
-	*) die "usage: install.sh [install|uninstall|status]" ;;
 esac
