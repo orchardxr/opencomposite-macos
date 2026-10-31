@@ -79,6 +79,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -87,5 +88,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          {
+            [[ ! -f "docs/releases/$GITHUB_REF_NAME.md" ]] || { cat "docs/releases/$GITHUB_REF_NAME.md"; echo; }
+            echo "Universal (arm64 + x86_64) native macOS OpenComposite. Unzip and run ./install.sh. Corresponding source: this tag (submodules + patches/opencomposite)."
+          } > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
-            --notes "Universal (arm64 + x86_64) native macOS OpenComposite. Unzip and run ./install.sh. Corresponding source: this tag (submodules + patches/opencomposite)."
+            --notes-file "$RUNNER_TEMP/notes.md"

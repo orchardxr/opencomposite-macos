@@ -12,7 +12,7 @@ Building, testing and releasing opencomposite-macos. For installing and using it
 | `web-overlays` | Swift package: `oc-webbroker`, `oc-webhelper` and the overlay compositor (`COverlayXR`), see [web-overlays.md](web-overlays.md) |
 | `scripts/patches.sh` | `apply` / `reset` / `status` / `new <name>` for the patch stack |
 | `scripts/build.sh` | builds the install tree and the test app |
-| `scripts/install.sh` | per-user install / uninstall / status (edits `openvrpaths.vrpath` with `plutil`) |
+| `scripts/install.sh` | per-user install / uninstall / status; `--register` / `unregister` edit `openvrpaths.vrpath` with `plutil` |
 | `VERSION` | release version `x.y.z` |
 | `scripts/package.sh` | release zip |
 | `scripts/run-ovr-metal.sh` | runs the Metal test app against an OpenXR runtime |
@@ -96,15 +96,33 @@ vrclient sets `XR_RUNTIME_JSON` to the per-user file (`$XDG_CONFIG_HOME`, else `
 first; symlinks resolved). The variable is inherited by the web overlay broker and helper; the helper does the same
 lookup itself when started without it. The system file still wins, as with the loader on its own.
 
-The installer puts `~/Library/Application Support/OpenComposite/runtime` (or `$OPENCOMPOSITE_HOME/runtime`) first in
-that `runtime` list, creating the file if needed. Other runtimes stay behind it, and `config`, `log` and
-`external_drivers` are left as they are. Uninstall removes the entry (and the file, if nothing else is registered) and
+### Registration: the Linux way
+
+On Linux, OpenComposite never registers itself. WiVRn's server has an OpenVR library setting: while the server runs,
+it writes `openvrpaths.vrpath` with OpenComposite as the runtime, and restores the previous file when it stops. Since
+0.1.1 this repo does the same on macOS: `install.sh` only installs the runtime (with its `build-info`) to
+`~/Library/Application Support/OpenComposite/runtime`, the location orchardxr/wivrn-macos searches; WiVRn recognises
+an install there by `bin/osx64/vrclient.dylib`. 0.1.0 registered the runtime permanently, which shadowed SteamVR even
+with WiVRn off and left two tools editing the same file.
+
+Consequences:
+
+- An OpenVR client started while WiVRn isn't running sees whatever was registered before (SteamVR, or nothing).
+  VarboR's vrclient bridge falls back to this install location when the vrpath names no runtime.
+- Nothing here depends on the registration: `vrclient.dylib` finds `oc-webbroker` next to itself (`dladdr`), the
+  helper finds the OpenXR runtime as described above, and the fonts folder is in the install directory.
+
+`install.sh --register` is the opt-in for use without WiVRn: it puts `runtime` (or `$OPENCOMPOSITE_HOME/runtime`)
+first in the `runtime` list, creating the file if needed. Other runtimes stay behind it, and `config`, `log` and
+`external_drivers` are left as they are. `unregister` and `uninstall` remove the entry (and the file, if nothing else
+is registered), which also cleans up 0.1.0's entry; a plain reinstall leaves an existing entry alone. Uninstall then
 deletes the install directory.
 
 ## Tests
 
 `tests/install/test-install.sh` runs install, reinstall and uninstall against a temporary `HOME` (with and without an
-existing SteamVR entry) and `dlopen`s the installed `vrclient.dylib` as arm64 and, under Rosetta, as x86_64.
+existing SteamVR entry): a plain install must not create or change the vrpath, `--register` must, and `unregister`
+and `uninstall` must remove our entry (also one from an earlier install). It also `dlopen`s the installed `vrclient.dylib` as arm64 and, under Rosetta, as x86_64.
 `INSTALL_SH=<path>` tests another copy of `install.sh`, e.g. the one from an unpacked release zip.
 
 `tests/web-overlays/test-web-overlays.sh` is the headless web overlay test (on-demand broker start, clean
@@ -136,8 +154,9 @@ signatures, runs the web overlay test and the installer test,
 and uploads the zip from `scripts/package.sh` as an artifact.
 
 The release version is in `VERSION` (`x.y.z`); `scripts/build.sh` writes it to `build-info` (VarboR reads
-`version=` from there) and refuses a `v*` tag that doesn't match it. To release, bump `VERSION`, then push the tag
-`v<VERSION>`. The workflow builds with that version label and creates a GitHub release with
+`version=` from there) and refuses a `v*` tag that doesn't match it. To release, bump `VERSION`, write
+`docs/releases/v<VERSION>.md`, then push the tag `v<VERSION>`. The workflow builds with that version label and
+creates a GitHub release with those notes and
 `opencomposite-macos-<tag>.zip`: `install.sh`, `runtime/`, the README and `licenses/` (GPL-3.0 for OpenComposite, its
 bundled licences, Apache-2.0 for the OpenXR loader, MIT for our scripts). The tagged commit is the corresponding
 source.

@@ -1,8 +1,8 @@
 # opencomposite-macos
 
 Native macOS [OpenComposite](https://gitlab.com/znixian/OpenOVR): an OpenVR runtime that translates OpenVR to
-OpenXR, with a Metal compositor. Install it once and OpenVR games on your Mac use it as their VR runtime, the way
-OpenComposite is used on Linux.
+OpenXR, with a Metal compositor. Install it once, and while WiVRn's server runs, OpenVR games on your Mac use it as
+their VR runtime, the way OpenComposite is used on Linux.
 
 Part of orchardxr: vibe-coded support for VR on macOS: native and Windows games, on Apple Silicon, streamed via WiVRn.
 
@@ -34,21 +34,33 @@ Part of orchardxr: vibe-coded support for VR on macOS: native and Windows games,
    ./install.sh
    ```
 
-The runtime goes to `~/Library/Application Support/OpenComposite` and is registered as your OpenVR runtime in
-`~/Library/Application Support/OpenVR/.openvr/openvrpaths.vrpath`. Any other runtime that is registered there
-(SteamVR) stays in the file, behind this one. Nothing needs admin rights.
+The runtime goes to `~/Library/Application Support/OpenComposite`. Nothing needs admin rights.
+
+WiVRn activates OpenComposite while it runs, like on Linux: when its server starts, it makes OpenComposite your
+OpenVR runtime (in `~/Library/Application Support/OpenVR/.openvr/openvrpaths.vrpath`), and when it stops, it puts
+the file back as it was. So SteamVR, if you have it, is untouched while WiVRn isn't running. This needs a WiVRn
+release from orchardxr/wivrn-macos with the OpenVR library setting; it finds this install by itself.
+
+Using OpenComposite without WiVRn, or with an older WiVRn? Register it yourself:
 
 ```sh
-./install.sh status       # which runtime is active, installed version
-./install.sh uninstall    # unregister, delete ~/Library/Application Support/OpenComposite and its logs
+./install.sh --register   # install and make it the OpenVR runtime permanently (other runtimes stay behind it)
+./install.sh unregister   # take that registration out again
 ```
 
-To update, run `./install.sh` from the new release.
+```sh
+./install.sh status       # installed version, which runtime is registered
+./install.sh uninstall    # remove our registration if any, delete ~/Library/Application Support/OpenComposite and its logs
+```
+
+To update, run `./install.sh` from the new release. Updating from 0.1.0 keeps that version's registration; run
+`./install.sh unregister` once to leave it to WiVRn.
 
 ## Limitations
 
 - Native macOS OpenVR games are barely tested. Only Metal texture submits are supported for them.
-- While installed, this runtime comes first: OpenVR apps load it rather than SteamVR. Uninstall to switch back.
+- With `--register`, this runtime comes first: OpenVR apps load it rather than SteamVR. Run
+  `./install.sh unregister` to switch back.
 - The binaries are ad-hoc signed, not notarized. `install.sh` clears the download quarantine on the files it installs.
 - Without a running OpenXR runtime with Metal support, games see no headset.
 - Web overlays: so far tested end to end only in an earlier form; Alyx's holograms (3D render models) and its
